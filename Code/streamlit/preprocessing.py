@@ -1,0 +1,115 @@
+import datetime
+
+from typing import Union, Tuple 
+from scipy.spatial import distance
+from scipy.signal import savgol_filter
+
+import numpy as np
+import geopandas as gpd
+
+def month_timeserie(date: list, ndvi: list) -> list:
+    """Transformation into a fixed timeserie of 1 value every two weeks
+
+    Args:
+        date (list): date timeseries
+        ndvi (list): ndvi timeseries
+
+    Returns:
+        list: new ndvi timeseries
+    """
+    monthly_ndvi = []
+    for i in range(1, 13):
+        datetimes = [datetime.datetime.fromtimestamp(t/1000) for t in date]
+        is_first_half = [d.month == i and d.day <= 15 for d in datetimes] # bool list of first 15 days of month
+        is_second_half = [d.month == i and d.day > 15 for d in datetimes] # bool list of last 15 days of month
+
+        ## First half
+        sum_ndvi_first = sum(v for v, is_f in zip(ndvi, is_first_half) if is_f)
+        count_of_values_first = sum(is_first_half)
+        try:
+            monthly_ndvi.append(sum_ndvi_first / count_of_values_first)
+        except ZeroDivisionError:
+            monthly_ndvi.append(None)
+
+        # Second half 
+        sum_ndvi_second = sum(v for v, is_s in zip(ndvi, is_second_half) if is_s)
+        count_of_values_second = sum(is_second_half)
+        try:
+            monthly_ndvi.append(sum_ndvi_second / count_of_values_second)
+        except ZeroDivisionError:
+            monthly_ndvi.append(None)
+
+    return monthly_ndvi
+
+def interpolate_linear(timeseries: list) -> list:
+    """linear interpolation of timeseries
+
+    Args:
+        timeseries (list): timeseries to interpolate 
+
+    Returns:
+        list: interpolate timeserie
+    """
+    # Boucle pour l'interpolation linéaire
+    for i in range(len(timeseries)):
+        if timeseries[i] is None:
+            # Trouver les indices des valeurs non nulles les plus proches
+            j = i - 1
+            while timeseries[j] is None:
+                j -= 1
+            k = i + 1
+            while k < len(timeseries) and timeseries[k] is None:
+                k += 1
+            # Calculer la valeur intermédiaire
+            if j < 0:
+                valeur_intermediaire = timeseries[k]
+            elif k >= len(timeseries):
+                valeur_intermediaire = timeseries[-1]
+            else:
+                valeur_intermediaire = timeseries[j] + (timeseries[k] - timeseries[j]) * (i - j) / (k - j)
+            # Remplacer la valeur None par la valeur intermédiaire
+            timeseries[i] = valeur_intermediaire
+    
+    none_indices = [i for i, liste in enumerate(timeseries) if liste is None]
+    
+    try : 
+        last = none_indices[0]
+        for i in range(last, len(timeseries)):
+            timeseries[i] = timeseries[last-1]
+    except IndexError:
+        pass
+    return timeseries
+
+def correction(timeseries: list) -> list:
+    """timeseries correction with linear interpolation and polynomial regression (5)
+
+    Args:
+        timeseries (list): timeseries
+
+    Returns:
+        list: corrected timeserie 
+    """
+    interpolated = interpolate_linear(timeseries)
+    polynomial_regression = savgol_filter(interpolated, window_length=11, polyorder=5, mode="nearest")
+    max_poly = [max(interpolated[i], polynomial_regression[i]) for i in range(len(interpolated))]
+
+    return max_poly
+
+def transform_data(bands_series: list, date_series: list) -> list:
+    """Transform data to use inside model
+
+    Args:
+        bands_series (list): bands timeserie
+        date_series (list): date timeserie
+
+    Returns:
+        list: bands timeserie flatten
+    """
+    bands_to_predict = []
+    for band_series in bands_series.T:
+        month_ndvi = month_timeserie(date_series, band_series)
+        bands_to_predict.append(correction(month_ndvi))
+
+    bands_to_predict = np.array(bands_to_predict).flatten().reshape(1, -1)
+
+    return bands_to_predict
